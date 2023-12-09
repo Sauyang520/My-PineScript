@@ -1,0 +1,174 @@
+//@version=5
+strategy(title='BB & RSI & MACD', overlay=true, initial_capital=1000, commission_value=0.06,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100, 
+     currency=currency.USDT, pyramiding=100)
+
+// Input: Take Profit & Stop Loss
+showLine = input.bool(false, 'Show Entry Price & SL & TP', group='TP & SL')
+applyStopLoss = input.bool(false, 'Apply Stop Loss', group='TP & SL')
+long_take_profit_percentage = input.float(10, 'Long Take Profit (%)',minval=0.1, step=0.1, group='TP & SL')
+long_stop_loss_percentage = input.float(5, 'Long Stop Loss (%)',minval=0.1, maxval=100, step=0.1, group='TP & SL')
+short_take_profit_percentage = input.float(10, 'Short Take Profit (%)',minval=0.1, step=0.1, group='TP & SL')
+short_stop_loss_percentage = input.float(5, 'ShortStop Loss (%)',minval=0.1, maxval=100, step=0.1, group='TP & SL')
+
+// Enable Multiple Entry
+enableMultipleEntry = input.bool(false, 'Enable Multiple Entry', group='Multiple Entry')
+maxEntryCount = input.int(2, 'Maximum Entry Times', minval=2, maxval=100, group='Multiple Entry')
+
+
+// Input: Exit Method
+exitMethod = input.string('Exit on TP & SL', title='Exit Method', 
+     options=['Exit on TP & SL', 'Exit on new Different Signal & TP & SL'])
+
+
+// Input: Backtest Date Range
+useDateFilter = input.bool(true, title="Filter Date Range of Backtest", group="Backtest Time Period")
+backtestStartDate = input.time(timestamp("1 January 2023"), title="Start Date", group="Backtest Time Period")
+backtestEndDate = input.time(timestamp("31 December 2023"), title="End Date", group="Backtest Time Period")
+
+// Determine Candlestick is in Date Range
+inTradeWindow = not useDateFilter or (time >= backtestStartDate and time < backtestEndDate)
+
+
+// Source for Calculation in BB & RSI & MACD
+src = input(close, 'Source', group='Indicator Source for BB & RSI & MACD')
+
+
+// Indicator: Bollinger Band
+showBB = input.bool(false, title='Show BB', group='Bollinger Band')
+bb_length = input.int(20, title="BB Length", minval=1, group='Bollinger Band')
+bb_mult = input.float(2.0, title="BB Mult", minval=0.001, maxval=50, group='Bollinger Band')
+
+bb_basis = ta.sma(src, bb_length)
+bb_dev = bb_mult * ta.stdev(src, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+plot(bb_basis, color=color.new(#9c27b0, 0), linewidth=2, title='BB Basis', display=showBB ? display.all : display.none)
+p1 = plot(bb_upper, color=color.new(#673ab7, 0), linewidth=2, title='BB Upper', display=showBB ? display.all : display.none)
+p2 = plot(bb_lower, color=color.new(#673ab7, 0), linewidth=2, title='BB Lower', display=showBB ? display.all : display.none)
+fill(p1, p2, color=color.new(#9c61f5, 90), title='BB Channel Fill', display=showBB ? display.all : display.none)
+
+// Determine Source crossover or crossunder BB Line
+bbCrossBand = ta.crossover(src, bb_upper) or ta.crossunder(src, bb_lower) ? true : false
+
+
+// Indicator: Relative Strangth Index
+rsi_length = input(14,title="RSI Period Length", group='RSI') 
+rsi_oversold = input.int(40, 'Oversold', group='RSI')
+rsi_overbought = input.int(60, 'Overbought', group='RSI')
+vrsi = ta.rsi(src, rsi_length)
+plot(vrsi, 'RSI', color.purple, display=display.none)
+
+// Determine RSI is Oversold or Overbought
+rsiIsOverSold = vrsi <= rsi_oversold ? true : false
+rsiIsOverBought = vrsi >= rsi_overbought ? true : false
+
+
+// Indicator: Moving Average Convergence Divergence
+macd_fast_length = input(title="Fast Length", defval=12, group='MACD')
+macd_slow_length = input(title="Slow Length", defval=26, group='MACD')
+macd_signal_length = input.int(title="Signal Smoothing",  minval = 1, maxval = 50, defval = 9, group='MACD')
+
+macd_dif = ta.ema(src, macd_fast_length) - ta.ema(src, macd_slow_length)
+macd_dea = ta.ema(macd_dif, macd_signal_length)
+macd_hist = macd_dif - macd_dea
+
+hline(0, "Zero Line", color=color.new(#787B86, 50), display=display.none)
+plot(macd_hist, title="Histogram", style=plot.style_columns, color=(macd_hist>=0 ? (macd_hist[1] < macd_hist ? #26A69A : #B2DFDB) : (macd_hist[1] < macd_hist ? #FFCDD2 : #FF5252)), display=display.none)
+plot(macd_dif, title="DIF", color=#2962FF, display=display.none)
+plot(macd_dea, title="DEA", color=#FF6D00, display=display.none)
+
+// Determine DIF crossover or crossunder DEA
+macdCrossUp = ta.crossover(macd_dif, macd_dea)
+macdCrossDown = ta.crossunder(macd_dif, macd_dea)
+
+
+// Long & Short Condition
+entryLong = (rsiIsOverBought or rsiIsOverSold) and bbCrossBand and macdCrossUp
+entryShort = (rsiIsOverBought or rsiIsOverSold) and bbCrossBand and macdCrossDown
+
+plotshape(entryLong, style=shape.triangleup, color=color.green,  location=location.bottom, size=size.normal, title="Long Signal")
+plotshape(entryShort, style=shape.triangledown, color=color.red,  location=location.top, size=size.normal, title="Short Signal")
+
+
+
+// Strategy
+var int entryTimes = 0
+
+// Calculate Take Profit & Stop Loss
+long_take_profit_price = strategy.position_avg_price * (1 + long_take_profit_percentage / 100)
+long_stop_loss_price = applyStopLoss ? strategy.position_avg_price * (1 - long_stop_loss_percentage / 100) : strategy.position_avg_price * (1 - float(101) / 100)
+short_take_profit_price = strategy.position_avg_price * (1 - short_take_profit_percentage / 100)
+short_stop_loss_price = applyStopLoss ? strategy.position_avg_price * (1 + short_stop_loss_percentage / 100) :strategy.position_avg_price * (1 + float(101) / 100)
+
+plot(showLine ? strategy.position_avg_price : na, title='Entry Price', style=plot.style_linebr ,color=color.yellow, linewidth=2)
+plot(showLine and strategy.position_size > 0 ? long_take_profit_price : na, title='Long Take Profit Price', style=plot.style_linebr, color=color.green, linewidth=2)
+plot(showLine and applyStopLoss and strategy.position_size > 0 ? long_stop_loss_price : na, title='Long Stop Loss Price', style=plot.style_linebr, color=color.red, linewidth=2)
+plot(showLine and strategy.position_size < 0 ? short_take_profit_price : na, title='Short Take Profit Price', style=plot.style_linebr, color=color.green, linewidth=2)
+plot(showLine and applyStopLoss and strategy.position_size < 0 ? short_stop_loss_price : na, title='Short Stop Loss Price', style=plot.style_linebr, color=color.red, linewidth=2)
+
+
+// TP & SL for Long & Short
+if strategy.position_size > 0
+    if (high >= long_take_profit_price)
+        strategy.close_all('Long Take Profit')
+        entryTimes := 0
+    else if (low <= long_stop_loss_price)
+        strategy.close_all("Long Stop Loss")
+        entryTimes := 0
+else if strategy.position_size < 0
+    if (low <= short_take_profit_price)
+        strategy.close_all("Short Take Profit")
+        entryTimes := 0
+    else if (high >= short_stop_loss_price)
+        strategy.close_all("Short Stop Loss")
+        entryTimes := 0
+
+
+// Date Range Exit
+if not inTradeWindow and inTradeWindow[1]
+    strategy.close_all("Date Range Exit")  
+
+// Entry Long & Short
+if inTradeWindow
+    if not enableMultipleEntry
+        if exitMethod == 'Exit on TP & SL' 
+            if strategy.position_size == 0 and entryTimes < 1
+                if entryLong
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Long', strategy.long)
+                else if entryShort
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Short', strategy.short)
+        else
+            if entryTimes <= 1
+                if entryLong and strategy.position_size <= 0
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Long', strategy.long)
+                else if entryShort and strategy.position_size >= 0
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Short', strategy.short)
+    else
+        if exitMethod == 'Exit on TP & SL' 
+            if entryTimes < maxEntryCount
+                if strategy.position_size >=0 and entryLong
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Long '+str.tostring(entryTimes), strategy.long)
+                else if strategy.position_size <=0 and entryShort
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Short '+str.tostring(entryTimes), strategy.short)                    
+        else
+            if entryTimes < maxEntryCount
+                if strategy.position_size >= 0 and entryLong
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Long '+str.tostring(entryTimes), strategy.long)
+                else if strategy.position_size <= 0 and entryShort
+                    entryTimes := entryTimes + 1
+                    strategy.entry('Short '+str.tostring(entryTimes), strategy.short)
+                else if strategy.position_size < 0 and entryLong
+                    entryTimes := 1
+                    strategy.entry('Long '+str.tostring(entryTimes), strategy.long)
+                else if strategy.position_size > 0 and entryShort
+                    entryTimes := 1
+                    strategy.entry('Short '+str.tostring(entryTimes), strategy.short)
